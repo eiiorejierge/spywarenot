@@ -260,6 +260,69 @@ function checkAlerts(prev, next) {
   }
 }
 
+// ── Config & Discord ───────────────────────────────────────────────────────────
+
+const DEFAULT_CONFIG = {
+  players: ['', '', '', ''],
+  presenceNotify: [true, true, true, true],
+  channelId: '', balanceChannelId: '', gainChannelId: '', lossChannelId: '',
+  bigGainChannelId: '', bigLossChannelId: '', presenceChannelId: '', combatChannelId: '',
+  bigGainPct: 50, bigLossPct: 50, gainAlertMin: 0, lossAlertMin: 0,
+  filters: { hugeGain: true, bigGain: true, medGain: true, smallGain: true, tinyGain: true,
+             hugeLoss: true, bigLoss: true, medLoss: true, smallLoss: true,
+             online: true, offline: true, kill: true, death: true },
+}
+
+function loadConfig() {
+  try {
+    const s = JSON.parse(localStorage.getItem('multi-config') || 'null')
+    if (s) return { ...DEFAULT_CONFIG, ...s, filters: { ...DEFAULT_CONFIG.filters, ...(s.filters || {}) },
+                    presenceNotify: Array.isArray(s.presenceNotify) ? s.presenceNotify : DEFAULT_CONFIG.presenceNotify }
+  } catch (_) {}
+  return { ...DEFAULT_CONFIG }
+}
+
+function resolveChannel(cfg, type, isGain, isBig) {
+  if (type === 'balance') {
+    const cands = isGain
+      ? [(isBig && cfg.bigGainChannelId), cfg.gainChannelId, cfg.balanceChannelId, cfg.channelId]
+      : [(isBig && cfg.bigLossChannelId), cfg.lossChannelId, cfg.balanceChannelId, cfg.channelId]
+    return cands.find(id => id && id.trim()) || ''
+  }
+  if (type === 'presence') return [cfg.presenceChannelId, cfg.channelId].find(id => id && id.trim()) || ''
+  return [cfg.combatChannelId, cfg.channelId].find(id => id && id.trim()) || ''
+}
+
+async function sendDiscord(channelId, embed) {
+  if (!channelId) return
+  try { await fetch('/api/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ channelId, embed }) }) } catch (_) {}
+}
+
+function balanceEmbed(name, diff, pct, before, after, amtAlert) {
+  const isGain = diff > 0, ap = Math.abs(pct), sign = diff >= 0 ? '+' : ''
+  const emoji = isGain ? (ap >= 50 ? '🚀' : ap >= 25 ? '💰' : '📈') : (ap >= 50 ? '😱' : ap >= 25 ? '🛍️' : '💸')
+  return { title: `${emoji} ${name} — ${isGain ? 'Balance Gained' : 'Balance Lost'}`, color: isGain ? 0x57F287 : 0xED4245,
+    fields: [{ name: 'Before', value: `\`${fmt(before)}\``, inline: true }, { name: 'After', value: `\`${fmt(after)}\``, inline: true },
+             { name: 'Change', value: `\`${sign}${fmt(diff)} (${sign}${pct.toFixed(1)}%)\``, inline: true },
+             { name: 'Real Value', value: `\`${fmtReal(after)}\``, inline: true }, { name: 'Real Change', value: `\`${fmtReal(diff, true)}\``, inline: true }],
+    thumbnail: { url: `https://mc-heads.net/avatar/${name}/64` },
+    footer: { text: `${name} • $0.04/1M coins${amtAlert ? ' • 🔔 amount alert' : ''}` }, timestamp: new Date().toISOString() }
+}
+
+function presenceEmbed(name, online, balance) {
+  return { title: online ? `🟢 ${name} — Online` : `🔴 ${name} — Offline`, color: online ? 0x57F287 : 0xED4245,
+    fields: [{ name: 'Balance', value: `\`${fmt(balance)}\``, inline: true }, { name: 'Real Value', value: `\`${fmtReal(balance)}\``, inline: true }],
+    thumbnail: { url: `https://mc-heads.net/avatar/${name}/64` }, footer: { text: `${name} • multi-tracker` }, timestamp: new Date().toISOString() }
+}
+
+function combatEmbed(name, type, count, total) {
+  const isKill = type === 'kill'
+  return { title: isKill ? `⚔️ ${name} — Kill${count > 1 ? 's' : ''}` : `💀 ${name} — Death${count > 1 ? 's' : ''}`,
+    color: isKill ? 0xFF9500 : 0xED4245,
+    fields: [{ name: count > 1 ? `+${count}` : 'Count', value: `\`${total} total\``, inline: true }],
+    thumbnail: { url: `https://mc-heads.net/avatar/${name}/64` }, footer: { text: `${name} • multi-tracker` }, timestamp: new Date().toISOString() }
+}
+
 // ── Mini Graph ─────────────────────────────────────────────────────────────────
 
 function MiniGraph({ name, graphData, chartType }) {
@@ -1055,8 +1118,7 @@ export default function Home() {
   const [loading,     setLoading]     = useState(true)
   const [updated,     setUpdated]     = useState(null)
   const [showSettings, setShowSettings] = useState(false)
-  const [trackedNames, setTrackedNames] = useState(['', '', '', ''])
-  const [settingsDraft, setSettingsDraft] = useState(['', '', '', ''])
+  const [configDraft,  setConfigDraft]  = useState(DEFAULT_CONFIG)
   const prevPlayers   = useRef({})
   const graphsRef     = useRef({})
 
@@ -1065,13 +1127,9 @@ export default function Home() {
     if (typeof window === 'undefined') return
     const saved = localStorage.getItem('multi-theme')
     if (THEMES.includes(saved)) setTheme(saved)
-    const savedPlayers = localStorage.getItem('multi-players')
-    if (savedPlayers) {
-      try {
-        const arr = JSON.parse(savedPlayers)
-        if (Array.isArray(arr)) { setTrackedNames(arr); setSettingsDraft(arr) }
-      } catch (_) {}
-    } else {
+    const cfg = loadConfig()
+    setConfigDraft(cfg)
+    if (!cfg.players.some(n => n && n.trim())) {
       setShowSettings(true)
       setLoading(false)
     }
@@ -1088,8 +1146,8 @@ export default function Home() {
 
   const load = useCallback(async () => {
     try {
-      const names = (JSON.parse(localStorage.getItem('multi-players') || '[]'))
-        .filter(n => n && n.trim())
+      const cfg   = loadConfig()
+      const names = cfg.players.filter(n => n && n.trim())
       if (!names.length) { setLoading(false); return }
       const res  = await fetch(`/api/data?players=${encodeURIComponent(names.join(','))}`)
       const data = await res.json()
@@ -1097,9 +1155,36 @@ export default function Home() {
       if (data.players?.length) {
         data.players.forEach(p => {
           checkAlerts(prevPlayers.current[p.name], p)
+          const prev = prevPlayers.current[p.name]
+
+          // Discord notifications
+          if (prev) {
+            if (prev.balance != null && p.balance != null && prev.balance !== p.balance) {
+              const diff = p.balance - prev.balance, pct = prev.balance !== 0 ? (diff / prev.balance) * 100 : 0
+              const ap = Math.abs(pct), absDiff = Math.abs(diff)
+              const amtAlert = (diff > 0 && cfg.gainAlertMin > 0 && absDiff >= cfg.gainAlertMin) ||
+                               (diff < 0 && cfg.lossAlertMin > 0 && absDiff >= cfg.lossAlertMin)
+              const key = diff > 0
+                ? (pct >= 100 ? 'hugeGain' : pct >= 50 ? 'bigGain' : pct >= 25 ? 'medGain' : pct >= 10 ? 'smallGain' : 'tinyGain')
+                : (ap >= 50 ? 'hugeLoss' : ap >= 25 ? 'bigLoss' : ap >= 10 ? 'medLoss' : 'smallLoss')
+              if (amtAlert || cfg.filters[key]) {
+                const isGain = diff > 0, isBig = ap >= (isGain ? cfg.bigGainPct : cfg.bigLossPct) || amtAlert
+                sendDiscord(resolveChannel(cfg, 'balance', isGain, isBig), balanceEmbed(p.name, diff, pct, prev.balance, p.balance, amtAlert))
+              }
+            }
+            if (prev.online !== null && p.online !== null && prev.online !== p.online) {
+              const idx = cfg.players.findIndex(n => n && n.toLowerCase() === p.name.toLowerCase())
+              if (cfg.filters[p.online ? 'online' : 'offline'] && (idx === -1 || cfg.presenceNotify[idx] !== false))
+                sendDiscord(resolveChannel(cfg, 'presence'), presenceEmbed(p.name, p.online, p.balance))
+            }
+            if (prev.kills != null && p.kills != null && p.kills > prev.kills && cfg.filters.kill)
+              sendDiscord(resolveChannel(cfg, 'combat'), combatEmbed(p.name, 'kill', p.kills - prev.kills, p.kills))
+            if (prev.deaths != null && p.deaths != null && p.deaths > prev.deaths && cfg.filters.death)
+              sendDiscord(resolveChannel(cfg, 'combat'), combatEmbed(p.name, 'death', p.deaths - prev.deaths, p.deaths))
+          }
+
           // Compute events from state changes
-          if (prevPlayers.current[p.name]) {
-            const prev = prevPlayers.current[p.name]
+          if (prev) {
             setEvents(ev => {
               const list = [...(ev[p.name] || [])]
               if (prev.kills != null && p.kills != null && p.kills > prev.kills) {
@@ -1201,7 +1286,7 @@ export default function Home() {
                   <button key={t} className={`theme-btn${theme === t ? ' active' : ''}`} data-theme={t} title={t} onClick={() => setTheme(t)} />
                 ))}
               </div>
-              <button className="topbar-btn" title="Settings" onClick={() => { setSettingsDraft([...trackedNames]); setShowSettings(true) }}>⚙</button>
+              <button className="topbar-btn" title="Settings" onClick={() => { setConfigDraft(loadConfig()); setShowSettings(true) }}>⚙</button>
               <button className="topbar-btn" title="Refresh" onClick={load}>↻</button>
               {updated && <span className="topbar-upd">{fmtAge(updated)}</span>}
             </div>
@@ -1230,7 +1315,7 @@ export default function Home() {
           </div>
 
           {players.length === 0 && (
-            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--dimmest)', fontFamily: 'var(--mono)', fontSize: 11, cursor: 'pointer' }} onClick={() => { setSettingsDraft([...trackedNames]); setShowSettings(true) }}>
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--dimmest)', fontFamily: 'var(--mono)', fontSize: 11, cursor: 'pointer' }} onClick={() => { setConfigDraft(loadConfig()); setShowSettings(true) }}>
               // click ⚙ to add players
             </div>
           )}
@@ -1248,31 +1333,140 @@ export default function Home() {
       )}
 
       {showSettings && (
-        <div className="settings-overlay" onClick={() => setShowSettings(false)}>
-          <div className="settings-modal" onClick={e => e.stopPropagation()}>
-            <div className="settings-title">PLAYERS</div>
-            {[0,1,2,3].map(i => (
-              <input
-                key={i}
-                className="settings-input"
-                placeholder={`Player ${i + 1}`}
-                value={settingsDraft[i] || ''}
-                onChange={e => setSettingsDraft(d => { const n = [...d]; n[i] = e.target.value; return n })}
-                onKeyDown={e => { if (e.key === 'Enter') { const names = settingsDraft.map(n => n.trim()); setTrackedNames(names); localStorage.setItem('multi-players', JSON.stringify(names)); prevPlayers.current = {}; graphsRef.current = {}; setGraphs({}); setEvents({}); setPlayers([]); setShowSettings(false); load() } }}
-              />
-            ))}
-            <button className="settings-save" onClick={() => {
-              const names = settingsDraft.map(n => n.trim())
-              setTrackedNames(names)
-              localStorage.setItem('multi-players', JSON.stringify(names))
-              prevPlayers.current = {}
-              graphsRef.current = {}
-              setGraphs({})
-              setEvents({})
-              setPlayers([])
-              setShowSettings(false)
-              load()
-            }}>SAVE</button>
+        <div className="set-overlay" onClick={() => setShowSettings(false)}>
+          <div className="set-card" onClick={e => e.stopPropagation()}>
+            <div className="set-head">
+              <div className="set-title">Settings</div>
+              <button className="set-x" onClick={() => setShowSettings(false)}>✕</button>
+            </div>
+            <div className="set-body">
+
+              <div className="set-section">
+                <div className="set-section-label">Players to Track</div>
+                <div className="set-player-grid">
+                  {[0,1,2,3].map(i => (
+                    <div key={i} className="set-player-row">
+                      <span className="set-player-num">{i+1}</span>
+                      <input className="set-input" placeholder="username"
+                        value={configDraft.players[i] || ''}
+                        onChange={e => setConfigDraft(d => { const pl = [...d.players]; pl[i] = e.target.value; return { ...d, players: pl } })}
+                      />
+                      <label className="pn-label" title="Online/offline notifications">
+                        <input type="checkbox" checked={configDraft.presenceNotify[i] !== false}
+                          onChange={e => setConfigDraft(d => { const pn = [...d.presenceNotify]; pn[i] = e.target.checked; return { ...d, presenceNotify: pn } })}
+                        />🔔
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="set-section">
+                <div className="set-section-label">Channels</div>
+                {[
+                  ['channelId',        'Default Channel ID',   'required',                       'fallback for all'],
+                  ['balanceChannelId', 'Balance — All',        'leave empty → uses default',     'fallback for gains & losses'],
+                  ['gainChannelId',    'Balance — Gains',      'leave empty → uses balance all', 'any positive change'],
+                  ['lossChannelId',    'Balance — Losses',     'leave empty → uses balance all', 'any negative change'],
+                ].map(([key, label, ph, hint]) => (
+                  <div key={key}>
+                    <label className="set-field-label">{label} <span style={{color:'var(--dimmest)',fontWeight:400}}>{hint}</span></label>
+                    <input className="set-input" style={{width:'100%',marginBottom:8}} placeholder={ph}
+                      value={configDraft[key] || ''}
+                      onChange={e => setConfigDraft(d => ({ ...d, [key]: e.target.value }))}
+                    />
+                  </div>
+                ))}
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
+                  <div>
+                    <label className="set-field-label">Big Gain threshold <span style={{color:'var(--dimmest)',fontWeight:400}}>% change</span></label>
+                    <input className="set-input" type="number" min="1" max="9999" style={{width:'100%'}}
+                      value={configDraft.bigGainPct ?? 50}
+                      onChange={e => setConfigDraft(d => ({ ...d, bigGainPct: parseInt(e.target.value) || 50 }))}
+                    />
+                  </div>
+                  <div>
+                    <label className="set-field-label">Big Loss threshold <span style={{color:'var(--dimmest)',fontWeight:400}}>% change</span></label>
+                    <input className="set-input" type="number" min="1" max="9999" style={{width:'100%'}}
+                      value={configDraft.bigLossPct ?? 50}
+                      onChange={e => setConfigDraft(d => ({ ...d, bigLossPct: parseInt(e.target.value) || 50 }))}
+                    />
+                  </div>
+                </div>
+                {[
+                  ['bigGainChannelId',  'Balance — Big Gains',  'leave empty → uses gains',   'meets threshold above, or amount alert'],
+                  ['bigLossChannelId',  'Balance — Big Losses', 'leave empty → uses losses',  'meets threshold above, or amount alert'],
+                  ['presenceChannelId', 'Presence Events',      'leave empty → uses default', 'optional override'],
+                  ['combatChannelId',   'Combat Events',        'leave empty → uses default', 'optional override'],
+                ].map(([key, label, ph, hint]) => (
+                  <div key={key}>
+                    <label className="set-field-label">{label} <span style={{color:'var(--dimmest)',fontWeight:400}}>{hint}</span></label>
+                    <input className="set-input" style={{width:'100%',marginBottom:8}} placeholder={ph}
+                      value={configDraft[key] || ''}
+                      onChange={e => setConfigDraft(d => ({ ...d, [key]: e.target.value }))}
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <div className="set-section">
+                <div className="set-section-label">Filters — Balance Gains</div>
+                {[['hugeGain','Huge Gain','≥100%'],['bigGain','Big Gain','≥50%'],['medGain','Med Gain','≥25%'],['smallGain','Small Gain','≥10%'],['tinyGain','Tiny Gain','<10%']].map(([key,label,hint]) => (
+                  <div key={key} className="toggle-row">
+                    <span className="toggle-label">{label} <span>{hint}</span></span>
+                    <label className="sw"><input type="checkbox" checked={configDraft.filters[key] !== false} onChange={e => setConfigDraft(d => ({ ...d, filters: { ...d.filters, [key]: e.target.checked } }))} /><span className="sw-track"><span className="sw-thumb" /></span></label>
+                  </div>
+                ))}
+              </div>
+
+              <div className="set-section">
+                <div className="set-section-label">Filters — Balance Losses</div>
+                {[['hugeLoss','Huge Loss','≥50%'],['bigLoss','Big Loss','≥25%'],['medLoss','Med Loss','≥10%'],['smallLoss','Small Loss','<10%']].map(([key,label,hint]) => (
+                  <div key={key} className="toggle-row">
+                    <span className="toggle-label">{label} <span>{hint}</span></span>
+                    <label className="sw"><input type="checkbox" checked={configDraft.filters[key] !== false} onChange={e => setConfigDraft(d => ({ ...d, filters: { ...d.filters, [key]: e.target.checked } }))} /><span className="sw-track"><span className="sw-thumb" /></span></label>
+                  </div>
+                ))}
+              </div>
+
+              <div className="set-section">
+                <div className="set-section-label">Filters — Presence &amp; Combat</div>
+                {[['online','Online'],['offline','Offline'],['kill','Kills'],['death','Deaths']].map(([key,label]) => (
+                  <div key={key} className="toggle-row">
+                    <span className="toggle-label">{label}</span>
+                    <label className="sw"><input type="checkbox" checked={configDraft.filters[key] !== false} onChange={e => setConfigDraft(d => ({ ...d, filters: { ...d.filters, [key]: e.target.checked } }))} /><span className="sw-track"><span className="sw-thumb" /></span></label>
+                  </div>
+                ))}
+              </div>
+
+              <div className="set-section">
+                <div className="set-section-label">Amount Alerts <span style={{color:'var(--dimmest)',fontWeight:400}}>— fires regardless of % filters</span></div>
+                <label className="set-field-label">Gain Alert <span style={{color:'var(--dimmest)',fontWeight:400}}>minimum coins (0 = off)</span></label>
+                <input className="set-input" type="number" min="0" step="1000" placeholder="e.g. 100000" style={{width:'100%',marginBottom:8}}
+                  value={configDraft.gainAlertMin || 0}
+                  onChange={e => setConfigDraft(d => ({ ...d, gainAlertMin: parseInt(e.target.value) || 0 }))}
+                />
+                <label className="set-field-label">Loss Alert <span style={{color:'var(--dimmest)',fontWeight:400}}>minimum coins (0 = off)</span></label>
+                <input className="set-input" type="number" min="0" step="1000" placeholder="e.g. 50000" style={{width:'100%'}}
+                  value={configDraft.lossAlertMin || 0}
+                  onChange={e => setConfigDraft(d => ({ ...d, lossAlertMin: parseInt(e.target.value) || 0 }))}
+                />
+              </div>
+
+            </div>
+            <div className="set-foot">
+              <button className="btn-secondary" onClick={() => setShowSettings(false)}>Cancel</button>
+              <button className="btn-primary" onClick={() => {
+                localStorage.setItem('multi-config', JSON.stringify(configDraft))
+                prevPlayers.current = {}
+                graphsRef.current = {}
+                setGraphs({})
+                setEvents({})
+                setPlayers([])
+                setShowSettings(false)
+                load()
+              }}>Save &amp; Apply</button>
+            </div>
           </div>
         </div>
       )}
@@ -1514,12 +1708,40 @@ html,body{height:100%;overflow:hidden;user-select:none;background:var(--bg);colo
 .online-pulse{animation:blink 2.5s infinite}
 
 /* Settings */
-.settings-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;display:flex;align-items:center;justify-content:center}
-.settings-modal{background:var(--s2);border:1px solid var(--border2);border-radius:10px;padding:24px;display:flex;flex-direction:column;gap:12px;min-width:260px}
-.settings-title{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:var(--dimmer);text-transform:uppercase}
-.settings-input{background:var(--s3);border:1px solid var(--border2);border-radius:6px;padding:8px 12px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none}
-.settings-input::placeholder{color:var(--dimmest)}
-.settings-input:focus{border-color:var(--border3)}
-.settings-save{background:var(--s4);border:1px solid var(--border3);border-radius:6px;padding:8px;color:var(--text);font-family:var(--mono);font-size:11px;letter-spacing:.1em;cursor:pointer}
-.settings-save:hover{background:var(--border2)}
+.set-overlay{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.85);backdrop-filter:blur(8px)}
+.set-card{background:var(--s1);border:1px solid var(--border2);border-radius:8px;width:460px;max-height:82vh;display:flex;flex-direction:column;overflow:hidden}
+.set-head{display:flex;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border)}
+.set-title{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;flex:1}
+.set-x{background:transparent;border:1px solid var(--border);color:var(--dim);cursor:pointer;width:26px;height:26px;border-radius:3px;font-size:13px;display:flex;align-items:center;justify-content:center;transition:all .15s}
+.set-x:hover{border-color:var(--border2);color:var(--text)}
+.set-body{padding:18px 20px;overflow-y:auto;flex:1}
+.set-body::-webkit-scrollbar{width:2px}
+.set-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08)}
+.set-section{margin-bottom:18px}
+.set-section-label{font-size:9px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:var(--dimmer);font-family:var(--mono);margin-bottom:10px;padding-bottom:5px;border-bottom:1px solid var(--border)}
+.set-player-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.set-player-row{display:flex;align-items:center;gap:7px}
+.set-player-num{font-size:10px;color:var(--dimmest);font-family:var(--mono);width:14px;flex-shrink:0;text-align:right}
+.pn-label{display:flex;align-items:center;gap:4px;cursor:pointer;flex-shrink:0;font-size:11px;color:var(--dim);font-family:var(--mono);user-select:none}
+.pn-label input[type=checkbox]{accent-color:var(--text);width:13px;height:13px;cursor:pointer;flex-shrink:0}
+.pn-label:hover{color:var(--text)}
+.set-input{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:7px 10px;color:var(--text);font-size:11px;font-family:var(--mono);outline:none;transition:border-color .15s}
+.set-input:focus{border-color:rgba(255,255,255,.22)}
+.set-input::placeholder{color:var(--dimmest)}
+.set-field-label{font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-family:var(--mono);margin-bottom:5px;display:block}
+.set-foot{padding:13px 20px;border-top:1px solid var(--border);display:flex;gap:8px}
+.btn-primary{flex:1;padding:10px;background:var(--text);color:var(--bg);border:none;border-radius:4px;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;font-family:var(--mono);cursor:pointer;transition:opacity .15s}
+.btn-primary:hover{opacity:.85}
+.btn-secondary{padding:10px 14px;background:transparent;color:var(--dim);border:1px solid var(--border);border-radius:4px;font-size:11px;font-family:var(--mono);cursor:pointer;transition:all .15s}
+.btn-secondary:hover{border-color:var(--border2);color:var(--text)}
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.toggle-row:last-child{border-bottom:none}
+.toggle-label{font-size:10px;font-family:var(--mono);color:var(--text)}
+.toggle-label span{color:var(--dimmest);font-size:9px;margin-left:4px}
+.sw{position:relative;display:inline-block;cursor:pointer;flex-shrink:0}
+.sw input{opacity:0;width:0;height:0;position:absolute}
+.sw-track{display:block;width:32px;height:17px;background:var(--s3);border:1px solid var(--border2);border-radius:9px;position:relative;transition:all .18s}
+.sw-thumb{position:absolute;top:2px;left:2px;width:11px;height:11px;background:var(--dimmer);border-radius:50%;transition:all .18s}
+.sw input:checked~.sw-track{background:rgba(0,255,136,.15);border-color:rgba(0,255,136,.35)}
+.sw input:checked~.sw-track .sw-thumb{left:17px;background:var(--green)}
 `
