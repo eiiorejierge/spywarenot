@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import Head from 'next/head'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -272,59 +272,15 @@ const RANGES = [
 ]
 
 export default function Home() {
-  const [configured, setConfigured] = useState(true)
-  const [players,    setPlayers]    = useState([])
-  const [graphs,     setGraphs]     = useState({})
-  const [rangeMs,    setRangeMs]    = useState(86_400_000)
-  const [selected,   setSelected]   = useState(null)
-  const [updated,    setUpdated]    = useState(null)
-  const [loading,    setLoading]    = useState(true)
-  const [error,      setError]      = useState(null)
+  const [rangeMs,  setRangeMs]  = useState(86_400_000)
+  const [selected, setSelected] = useState(null)
 
-  const demo        = !configured || (players.length === 0 && !loading)
-  const viewPlayers = demo ? DEMO_PLAYERS : players
-  const viewGraphs  = demo ? DEMO_GRAPHS  : graphs
-
-  const load = useCallback(async () => {
-    try {
-      const res  = await fetch('/api/data')
-      const data = await res.json()
-
-      setConfigured(data.configured !== false)
-
-      if (data.players?.length) {
-        setPlayers(data.players)
-        const gs = { ...graphs }
-        await Promise.all(data.players.map(async p => {
-          try {
-            const r = await fetch(`/api/data?name=${encodeURIComponent(p.name)}`)
-            const d = await r.json()
-            gs[p.name] = d.graph || []
-          } catch (_) { gs[p.name] = gs[p.name] || [] }
-        }))
-        setGraphs(gs)
-      }
-
-      setUpdated(Date.now())
-      setError(null)
-    } catch (e) {
-      setError('Failed to fetch data')
-    }
-    setLoading(false)
-  }, []) // eslint-disable-line
-
-  useEffect(() => {
-    load()
-    const t = setInterval(load, 30_000)
-    return () => clearInterval(t)
-  }, [load])
-
-  const totalBal    = viewPlayers.reduce((s, p) => s + (p.balance || 0), 0)
-  const onlineCount = viewPlayers.filter(p => p.online).length
-  const selPlayer   = selected ? viewPlayers.find(p => p.name === selected) : null
+  const totalBal    = DEMO_PLAYERS.reduce((s, p) => s + (p.balance || 0), 0)
+  const onlineCount = DEMO_PLAYERS.filter(p => p.online).length
+  const selPlayer   = selected ? DEMO_PLAYERS.find(p => p.name === selected) : null
 
   const getFilteredPts = name =>
-    (viewGraphs[name] || []).filter(d => d.ts >= Date.now() - rangeMs)
+    (DEMO_GRAPHS[name] || []).filter(d => d.ts >= Date.now() - rangeMs)
 
   return (
     <>
@@ -348,26 +304,24 @@ export default function Home() {
             <span className="bname">MULTI TRACKER</span>
           </div>
 
-          {viewPlayers.length > 0 && (
-            <div className="hstats">
-              <div className="hstat">
-                <div className="hsl">ONLINE</div>
-                <div className="hsv" style={{ color: onlineCount > 0 ? 'var(--g)' : 'var(--dim)' }}>
-                  {onlineCount}<span style={{ color: 'var(--dim)' }}>/{players.length}</span>
-                </div>
-              </div>
-              <div className="hsep" />
-              <div className="hstat">
-                <div className="hsl">COMBINED</div>
-                <div className="hsv">{fmt(totalBal)}</div>
-              </div>
-              <div className="hsep" />
-              <div className="hstat">
-                <div className="hsl">REAL $</div>
-                <div className="hsv">{fmtReal(totalBal)}</div>
+          <div className="hstats">
+            <div className="hstat">
+              <div className="hsl">ONLINE</div>
+              <div className="hsv" style={{ color: onlineCount > 0 ? 'var(--g)' : 'var(--dim)' }}>
+                {onlineCount}<span style={{ color: 'var(--dim)' }}>/{DEMO_PLAYERS.length}</span>
               </div>
             </div>
-          )}
+            <div className="hsep" />
+            <div className="hstat">
+              <div className="hsl">COMBINED</div>
+              <div className="hsv">{fmt(totalBal)}</div>
+            </div>
+            <div className="hsep" />
+            <div className="hstat">
+              <div className="hsl">REAL $</div>
+              <div className="hsv">{fmtReal(totalBal)}</div>
+            </div>
+          </div>
 
           <div className="hright">
             <div className="ranges">
@@ -381,43 +335,30 @@ export default function Home() {
                 </button>
               ))}
             </div>
-            <button className="refresh-btn" onClick={load} title="Refresh now">↻</button>
-            {updated && <div className="upd">{fmtAge(updated)}</div>}
           </div>
         </header>
 
         {/* ── Body ── */}
         <div className="body">
-          {/* Left: grid */}
           <div className="left">
-            {loading ? (
-              <div className="empty"><span className="spinner" /> loading...</div>
-            ) : (
-              <>
-                {demo && (
-                  <div className="demo-banner">DEMO MODE — connect KV storage to show real data</div>
-                )}
-                <div className="grid">
-                  {viewPlayers.map(p => (
-                    <PlayerCard
-                      key={p.name}
-                      player={p}
-                      pts={getFilteredPts(p.name)}
-                      selected={selected === p.name}
-                      onClick={() => setSelected(selected === p.name ? null : p.name)}
-                    />
-                  ))}
-                </div>
-              </>
-            )}
+            <div className="grid">
+              {DEMO_PLAYERS.map(p => (
+                <PlayerCard
+                  key={p.name}
+                  player={p}
+                  pts={getFilteredPts(p.name)}
+                  selected={selected === p.name}
+                  onClick={() => setSelected(selected === p.name ? null : p.name)}
+                />
+              ))}
+            </div>
           </div>
 
-          {/* Right: detail panel */}
           {selPlayer && (
             <div className="right">
               <DetailPanel
                 player={selPlayer}
-                allPts={viewGraphs[selPlayer.name] || []}
+                allPts={DEMO_GRAPHS[selPlayer.name] || []}
                 rangeMs={rangeMs}
                 onClose={() => setSelected(null)}
               />
@@ -427,10 +368,6 @@ export default function Home() {
 
         <footer>
           <span>multi tracker</span>
-          <span className="fsep">·</span>
-          <span>auto-refreshes every 30s</span>
-          <span className="fsep">·</span>
-          <span>graph data kept 7 days</span>
         </footer>
       </div>
     </>
@@ -512,13 +449,6 @@ const CSS = `
   .body { display: flex; gap: 14px; align-items: flex-start; }
   .left { flex: 1; min-width: 0; }
   .right { width: 380px; flex-shrink: 0; position: sticky; top: 16px; }
-
-  /* ── Demo banner ── */
-  .demo-banner {
-    font-size: 9px; letter-spacing: .14em; color: #ff9500;
-    border: 1px solid rgba(255,149,0,.2); background: rgba(255,149,0,.05);
-    border-radius: 4px; padding: 7px 12px; margin-bottom: 12px;
-  }
 
   /* ── Grid ── */
   .grid {
