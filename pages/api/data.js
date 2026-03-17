@@ -23,12 +23,13 @@ async function fetchPlayer(name) {
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 's-maxage=10, stale-while-revalidate=20')
 
-  const players = (process.env.PLAYERS || '').split(',').map(p => p.trim()).filter(Boolean)
-
   // Single player graph request — no storage, return empty graph
   if (req.query.name) {
     return res.json({ graph: [], meta: {} })
   }
+
+  const players = (req.query.players || process.env.PLAYERS || '')
+    .split(',').map(p => p.trim()).filter(Boolean)
 
   if (!players.length) {
     return res.json({ configured: false, players: [], graph: [] })

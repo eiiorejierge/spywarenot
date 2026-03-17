@@ -1054,14 +1054,24 @@ export default function Home() {
   const [focusedName, setFocusedName] = useState(null)
   const [loading,     setLoading]     = useState(true)
   const [updated,     setUpdated]     = useState(null)
+  const [showSettings, setShowSettings] = useState(false)
+  const [trackedNames, setTrackedNames] = useState(['', '', '', ''])
+  const [settingsDraft, setSettingsDraft] = useState(['', '', '', ''])
   const prevPlayers   = useRef({})
   const graphsRef     = useRef({})
 
-  // Load theme from localStorage
+  // Load theme + tracked players from localStorage
   useEffect(() => {
     if (typeof window === 'undefined') return
     const saved = localStorage.getItem('multi-theme')
     if (THEMES.includes(saved)) setTheme(saved)
+    const savedPlayers = localStorage.getItem('multi-players')
+    if (savedPlayers) {
+      try {
+        const arr = JSON.parse(savedPlayers)
+        if (Array.isArray(arr)) { setTrackedNames(arr); setSettingsDraft(arr) }
+      } catch (_) {}
+    }
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission()
     }
@@ -1075,7 +1085,10 @@ export default function Home() {
 
   const load = useCallback(async () => {
     try {
-      const res  = await fetch('/api/data')
+      const names = (JSON.parse(localStorage.getItem('multi-players') || '[]'))
+        .filter(n => n && n.trim())
+      if (!names.length) { setLoading(false); return }
+      const res  = await fetch(`/api/data?players=${encodeURIComponent(names.join(','))}`)
       const data = await res.json()
 
       if (data.players?.length) {
@@ -1185,6 +1198,7 @@ export default function Home() {
                   <button key={t} className={`theme-btn${theme === t ? ' active' : ''}`} data-theme={t} title={t} onClick={() => setTheme(t)} />
                 ))}
               </div>
+              <button className="topbar-btn" title="Settings" onClick={() => { setSettingsDraft([...trackedNames]); setShowSettings(true) }}>⚙</button>
               <button className="topbar-btn" title="Refresh" onClick={load}>↻</button>
               {updated && <span className="topbar-upd">{fmtAge(updated)}</span>}
             </div>
@@ -1213,8 +1227,8 @@ export default function Home() {
           </div>
 
           {players.length === 0 && (
-            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--dimmest)', fontFamily: 'var(--mono)', fontSize: 11 }}>
-              // waiting for data...
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--dimmest)', fontFamily: 'var(--mono)', fontSize: 11, cursor: 'pointer' }} onClick={() => { setSettingsDraft([...trackedNames]); setShowSettings(true) }}>
+              // click ⚙ to add players
             </div>
           )}
         </div>
@@ -1228,6 +1242,36 @@ export default function Home() {
           onClose={() => setFocusedName(null)}
           globalChartType={chartType}
         />
+      )}
+
+      {showSettings && (
+        <div className="settings-overlay" onClick={() => setShowSettings(false)}>
+          <div className="settings-modal" onClick={e => e.stopPropagation()}>
+            <div className="settings-title">PLAYERS</div>
+            {[0,1,2,3].map(i => (
+              <input
+                key={i}
+                className="settings-input"
+                placeholder={`Player ${i + 1}`}
+                value={settingsDraft[i] || ''}
+                onChange={e => setSettingsDraft(d => { const n = [...d]; n[i] = e.target.value; return n })}
+                onKeyDown={e => { if (e.key === 'Enter') { const names = settingsDraft.map(n => n.trim()); setTrackedNames(names); localStorage.setItem('multi-players', JSON.stringify(names)); prevPlayers.current = {}; graphsRef.current = {}; setGraphs({}); setEvents({}); setPlayers([]); setShowSettings(false); load() } }}
+              />
+            ))}
+            <button className="settings-save" onClick={() => {
+              const names = settingsDraft.map(n => n.trim())
+              setTrackedNames(names)
+              localStorage.setItem('multi-players', JSON.stringify(names))
+              prevPlayers.current = {}
+              graphsRef.current = {}
+              setGraphs({})
+              setEvents({})
+              setPlayers([])
+              setShowSettings(false)
+              load()
+            }}>SAVE</button>
+          </div>
+        </div>
       )}
     </>
   )
@@ -1465,4 +1509,14 @@ html,body{height:100%;overflow:hidden;user-select:none;background:var(--bg);colo
 /* Animations */
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
 .online-pulse{animation:blink 2.5s infinite}
+
+/* Settings */
+.settings-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;display:flex;align-items:center;justify-content:center}
+.settings-modal{background:var(--s2);border:1px solid var(--border2);border-radius:10px;padding:24px;display:flex;flex-direction:column;gap:12px;min-width:260px}
+.settings-title{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:var(--dimmer);text-transform:uppercase}
+.settings-input{background:var(--s3);border:1px solid var(--border2);border-radius:6px;padding:8px 12px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none}
+.settings-input::placeholder{color:var(--dimmest)}
+.settings-input:focus{border-color:var(--border3)}
+.settings-save{background:var(--s4);border:1px solid var(--border3);border-radius:6px;padding:8px;color:var(--text);font-family:var(--mono);font-size:11px;letter-spacing:.1em;cursor:pointer}
+.settings-save:hover{background:var(--border2)}
 `
