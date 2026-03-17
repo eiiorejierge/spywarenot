@@ -121,29 +121,25 @@ function Chart({ pts, h = 90 }) {
   return <canvas ref={ref} style={{ width: '100%', height: h + 'px', display: 'block' }} />
 }
 
-// ── Setup Banner ──────────────────────────────────────────────────────────────
+// ── Demo Data ─────────────────────────────────────────────────────────────────
 
-function SetupBanner() {
-  return (
-    <div className="setup-box">
-      <div className="setup-title">⚙ KV Storage Not Connected</div>
-      <div className="setup-body">
-        <p>This dashboard needs Vercel KV to store player data. Follow these steps:</p>
-        <ol>
-          <li>Go to your <strong>Vercel project dashboard</strong></li>
-          <li>Click <strong>Storage</strong> → <strong>Create Database</strong> → <strong>KV</strong></li>
-          <li>Name it anything, pick the free plan, click <strong>Create</strong></li>
-          <li>Click <strong>Connect Project</strong> and select this project</li>
-          <li>Go to <strong>Settings → Environment Variables</strong> — the KV vars are added automatically</li>
-          <li><strong>Redeploy</strong> the project (Deployments → ⋯ → Redeploy)</li>
-        </ol>
-        <p style={{ marginTop: 12 }}>
-          Then in the tracker app Settings → Web Dashboard, paste your Vercel URL and optionally set a <code>PUSH_SECRET</code>.
-        </p>
-      </div>
-    </div>
-  )
+const now = Date.now()
+const DEMO_PLAYERS = [
+  { name: 'Steve',   balance: 4820000, kills: 312, deaths: 44, online: true,  lastSeen: now },
+  { name: 'Alex',    balance: 1250000, kills: 87,  deaths: 21, online: false, lastSeen: now - 3_600_000 },
+  { name: 'Notch',   balance: 9100000, kills: 501, deaths: 12, online: true,  lastSeen: now },
+  { name: 'Herobrine', balance: 320000, kills: 29, deaths: 88, online: false, lastSeen: now - 7_200_000 },
+]
+
+function makeDemoGraph(base) {
+  const pts = []
+  for (let i = 48; i >= 0; i--) {
+    pts.push({ ts: now - i * 1_800_000, balance: base + (Math.random() - 0.48) * base * 0.04 * i })
+  }
+  return pts
 }
+
+const DEMO_GRAPHS = Object.fromEntries(DEMO_PLAYERS.map(p => [p.name, makeDemoGraph(p.balance)]))
 
 // ── Player Card ───────────────────────────────────────────────────────────────
 
@@ -285,6 +281,10 @@ export default function Home() {
   const [loading,    setLoading]    = useState(true)
   const [error,      setError]      = useState(null)
 
+  const demo        = !configured || (players.length === 0 && !loading)
+  const viewPlayers = demo ? DEMO_PLAYERS : players
+  const viewGraphs  = demo ? DEMO_GRAPHS  : graphs
+
   const load = useCallback(async () => {
     try {
       const res  = await fetch('/api/data')
@@ -319,12 +319,12 @@ export default function Home() {
     return () => clearInterval(t)
   }, [load])
 
-  const getFilteredPts = name =>
-    (graphs[name] || []).filter(d => d.ts >= Date.now() - rangeMs)
+  const totalBal    = viewPlayers.reduce((s, p) => s + (p.balance || 0), 0)
+  const onlineCount = viewPlayers.filter(p => p.online).length
+  const selPlayer   = selected ? viewPlayers.find(p => p.name === selected) : null
 
-  const totalBal    = players.reduce((s, p) => s + (p.balance || 0), 0)
-  const onlineCount = players.filter(p => p.online).length
-  const selPlayer   = selected ? players.find(p => p.name === selected) : null
+  const getFilteredPts = name =>
+    (viewGraphs[name] || []).filter(d => d.ts >= Date.now() - rangeMs)
 
   return (
     <>
@@ -348,7 +348,7 @@ export default function Home() {
             <span className="bname">MULTI TRACKER</span>
           </div>
 
-          {players.length > 0 && (
+          {viewPlayers.length > 0 && (
             <div className="hstats">
               <div className="hstat">
                 <div className="hsl">ONLINE</div>
@@ -392,29 +392,23 @@ export default function Home() {
           <div className="left">
             {loading ? (
               <div className="empty"><span className="spinner" /> loading...</div>
-            ) : !configured ? (
-              <SetupBanner />
-            ) : error ? (
-              <div className="empty" style={{ color: 'var(--r)' }}>{error}</div>
-            ) : players.length === 0 ? (
-              <div className="empty">
-                No data yet.<br />
-                <span style={{ color: 'var(--dimmer)', fontSize: 10, marginTop: 8, display: 'block' }}>
-                  Open the tracker app → Settings → Web Dashboard → paste your Vercel URL
-                </span>
-              </div>
             ) : (
-              <div className="grid">
-                {players.map(p => (
-                  <PlayerCard
-                    key={p.name}
-                    player={p}
-                    pts={getFilteredPts(p.name)}
-                    selected={selected === p.name}
-                    onClick={() => setSelected(selected === p.name ? null : p.name)}
-                  />
-                ))}
-              </div>
+              <>
+                {demo && (
+                  <div className="demo-banner">DEMO MODE — connect KV storage to show real data</div>
+                )}
+                <div className="grid">
+                  {viewPlayers.map(p => (
+                    <PlayerCard
+                      key={p.name}
+                      player={p}
+                      pts={getFilteredPts(p.name)}
+                      selected={selected === p.name}
+                      onClick={() => setSelected(selected === p.name ? null : p.name)}
+                    />
+                  ))}
+                </div>
+              </>
             )}
           </div>
 
@@ -423,7 +417,7 @@ export default function Home() {
             <div className="right">
               <DetailPanel
                 player={selPlayer}
-                allPts={graphs[selPlayer.name] || []}
+                allPts={viewGraphs[selPlayer.name] || []}
                 rangeMs={rangeMs}
                 onClose={() => setSelected(null)}
               />
@@ -518,6 +512,13 @@ const CSS = `
   .body { display: flex; gap: 14px; align-items: flex-start; }
   .left { flex: 1; min-width: 0; }
   .right { width: 380px; flex-shrink: 0; position: sticky; top: 16px; }
+
+  /* ── Demo banner ── */
+  .demo-banner {
+    font-size: 9px; letter-spacing: .14em; color: #ff9500;
+    border: 1px solid rgba(255,149,0,.2); background: rgba(255,149,0,.05);
+    border-radius: 4px; padding: 7px 12px; margin-bottom: 12px;
+  }
 
   /* ── Grid ── */
   .grid {
