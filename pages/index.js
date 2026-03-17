@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import Head from 'next/head'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -18,7 +18,7 @@ function fmtReal(v) {
   return `$${r < 0.01 ? r.toFixed(4) : r.toFixed(2)}`
 }
 
-function fmtSign(v)  { return v >= 0 ? '+' : '' }
+function fmtSign(v) { return v >= 0 ? '+' : '' }
 
 function fmtAge(ts) {
   if (!ts) return '—'
@@ -27,6 +27,36 @@ function fmtAge(ts) {
   if (d < 3600e3)  return `${Math.floor(d / 60e3)}m ago`
   if (d < 86400e3) return `${Math.floor(d / 3600e3)}h ago`
   return `${Math.floor(d / 86400e3)}d ago`
+}
+
+// ── Notifications ─────────────────────────────────────────────────────────────
+
+function notify(title, body, icon) {
+  if (typeof window === 'undefined') return
+  if (!('Notification' in window)) return
+  if (Notification.permission !== 'granted') return
+  new Notification(title, { body, icon: icon || '/favicon.ico', silent: false })
+}
+
+function checkAlerts(prev, next) {
+  if (!prev || !next) return
+  // Online / offline changes
+  if (!prev.online && next.online)
+    notify(`${next.name} joined`, `${next.name} is now online`, `https://mc-heads.net/avatar/${next.name}/64`)
+  if (prev.online && !next.online)
+    notify(`${next.name} left`, `${next.name} went offline`, `https://mc-heads.net/avatar/${next.name}/64`)
+  // Big balance change (>5%)
+  if (prev.balance != null && next.balance != null && prev.balance > 0) {
+    const pct = (next.balance - prev.balance) / prev.balance * 100
+    if (Math.abs(pct) >= 5) {
+      const dir = pct > 0 ? 'gained' : 'lost'
+      notify(
+        `${next.name} ${dir} ${Math.abs(pct).toFixed(1)}%`,
+        `Balance: ${fmt(prev.balance)} → ${fmt(next.balance)}`,
+        `https://mc-heads.net/avatar/${next.name}/64`
+      )
+    }
+  }
 }
 
 // ── Canvas Chart ──────────────────────────────────────────────────────────────
@@ -70,7 +100,6 @@ function Chart({ pts, h = 90 }) {
     const up    = valid.at(-1).balance >= valid[0].balance
     const col   = up ? '#00ff88' : '#ed4245'
 
-    // H/L guides
     ctx.setLineDash([2, 5])
     ctx.strokeStyle = 'rgba(255,255,255,.05)'
     ctx.lineWidth   = 1
@@ -82,7 +111,6 @@ function Chart({ pts, h = 90 }) {
     })
     ctx.setLineDash([])
 
-    // Fill
     const g = ctx.createLinearGradient(0, P, 0, h)
     g.addColorStop(0, up ? 'rgba(0,255,136,.12)' : 'rgba(237,66,69,.12)')
     g.addColorStop(1, 'rgba(0,0,0,0)')
@@ -94,7 +122,6 @@ function Chart({ pts, h = 90 }) {
     ctx.fillStyle = g
     ctx.fill()
 
-    // Glow
     ctx.beginPath()
     valid.forEach((d, i) => i === 0 ? ctx.moveTo(xp(d), yp(d)) : ctx.lineTo(xp(d), yp(d)))
     ctx.strokeStyle = up ? 'rgba(0,255,136,.15)' : 'rgba(237,66,69,.15)'
@@ -102,7 +129,6 @@ function Chart({ pts, h = 90 }) {
     ctx.lineJoin    = 'round'
     ctx.stroke()
 
-    // Line
     ctx.beginPath()
     valid.forEach((d, i) => i === 0 ? ctx.moveTo(xp(d), yp(d)) : ctx.lineTo(xp(d), yp(d)))
     ctx.strokeStyle = col
@@ -110,7 +136,6 @@ function Chart({ pts, h = 90 }) {
     ctx.lineJoin    = 'round'
     ctx.stroke()
 
-    // End dot
     const lp = valid.at(-1)
     ctx.beginPath(); ctx.arc(xp(lp), yp(lp), 5, 0, Math.PI * 2)
     ctx.fillStyle = up ? 'rgba(0,255,136,.15)' : 'rgba(237,66,69,.15)'; ctx.fill()
@@ -120,26 +145,6 @@ function Chart({ pts, h = 90 }) {
 
   return <canvas ref={ref} style={{ width: '100%', height: h + 'px', display: 'block' }} />
 }
-
-// ── Demo Data ─────────────────────────────────────────────────────────────────
-
-const now = Date.now()
-const DEMO_PLAYERS = [
-  { name: 'Steve',   balance: 4820000, kills: 312, deaths: 44, online: true,  lastSeen: now },
-  { name: 'Alex',    balance: 1250000, kills: 87,  deaths: 21, online: false, lastSeen: now - 3_600_000 },
-  { name: 'Notch',   balance: 9100000, kills: 501, deaths: 12, online: true,  lastSeen: now },
-  { name: 'Herobrine', balance: 320000, kills: 29, deaths: 88, online: false, lastSeen: now - 7_200_000 },
-]
-
-function makeDemoGraph(base) {
-  const pts = []
-  for (let i = 48; i >= 0; i--) {
-    pts.push({ ts: now - i * 1_800_000, balance: base + (Math.random() - 0.48) * base * 0.04 * i })
-  }
-  return pts
-}
-
-const DEMO_GRAPHS = Object.fromEntries(DEMO_PLAYERS.map(p => [p.name, makeDemoGraph(p.balance)]))
 
 // ── Player Card ───────────────────────────────────────────────────────────────
 
@@ -205,11 +210,11 @@ function PlayerCard({ player, pts, selected, onClick }) {
 function DetailPanel({ player, allPts, rangeMs, onClose }) {
   const pts = allPts.filter(d => d.ts >= Date.now() - rangeMs)
 
-  const hiVal  = pts.length ? Math.max(...pts.map(d => d.balance)) : null
-  const loVal  = pts.length ? Math.min(...pts.map(d => d.balance)) : null
-  const chg    = pts.length > 1 ? pts.at(-1).balance - pts[0].balance : null
-  const pct    = chg != null && pts[0].balance ? chg / pts[0].balance * 100 : null
-  const up     = chg != null && chg >= 0
+  const hiVal = pts.length ? Math.max(...pts.map(d => d.balance)) : null
+  const loVal = pts.length ? Math.min(...pts.map(d => d.balance)) : null
+  const chg   = pts.length > 1 ? pts.at(-1).balance - pts[0].balance : null
+  const pct   = chg != null && pts[0].balance ? chg / pts[0].balance * 100 : null
+  const up    = chg != null && chg >= 0
 
   return (
     <div className="detail">
@@ -261,7 +266,7 @@ function DetailPanel({ player, allPts, rangeMs, onClose }) {
   )
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 const RANGES = [
   { l: '1H', ms: 3_600_000 },
@@ -272,15 +277,63 @@ const RANGES = [
 ]
 
 export default function Home() {
+  const [players,  setPlayers]  = useState([])
+  const [graphs,   setGraphs]   = useState({})
   const [rangeMs,  setRangeMs]  = useState(86_400_000)
   const [selected, setSelected] = useState(null)
+  const [updated,  setUpdated]  = useState(null)
+  const [loading,  setLoading]  = useState(true)
+  const prevPlayers = useRef({})
 
-  const totalBal    = DEMO_PLAYERS.reduce((s, p) => s + (p.balance || 0), 0)
-  const onlineCount = DEMO_PLAYERS.filter(p => p.online).length
-  const selPlayer   = selected ? DEMO_PLAYERS.find(p => p.name === selected) : null
+  // Request notification permission on first load
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission()
+    }
+  }, [])
+
+  const load = useCallback(async () => {
+    try {
+      const res  = await fetch('/api/data')
+      const data = await res.json()
+
+      if (data.players?.length) {
+        // Check for alerts against previous state
+        data.players.forEach(p => {
+          checkAlerts(prevPlayers.current[p.name], p)
+          prevPlayers.current[p.name] = p
+        })
+
+        setPlayers(data.players)
+
+        const gs = {}
+        await Promise.all(data.players.map(async p => {
+          try {
+            const r = await fetch(`/api/data?name=${encodeURIComponent(p.name)}`)
+            const d = await r.json()
+            gs[p.name] = d.graph || []
+          } catch (_) { gs[p.name] = [] }
+        }))
+        setGraphs(gs)
+      }
+
+      setUpdated(Date.now())
+    } catch (_) {}
+    setLoading(false)
+  }, [])
+
+  useEffect(() => {
+    load()
+    const t = setInterval(load, 15_000)
+    return () => clearInterval(t)
+  }, [load])
 
   const getFilteredPts = name =>
-    (DEMO_GRAPHS[name] || []).filter(d => d.ts >= Date.now() - rangeMs)
+    (graphs[name] || []).filter(d => d.ts >= Date.now() - rangeMs)
+
+  const totalBal    = players.reduce((s, p) => s + (p.balance || 0), 0)
+  const onlineCount = players.filter(p => p.online).length
+  const selPlayer   = selected ? players.find(p => p.name === selected) : null
 
   return (
     <>
@@ -297,31 +350,32 @@ export default function Home() {
       <style>{CSS}</style>
 
       <div id="root">
-        {/* ── Header ── */}
         <header>
           <div className="brand">
             <span className="bdot" />
             <span className="bname">MULTI TRACKER</span>
           </div>
 
-          <div className="hstats">
-            <div className="hstat">
-              <div className="hsl">ONLINE</div>
-              <div className="hsv" style={{ color: onlineCount > 0 ? 'var(--g)' : 'var(--dim)' }}>
-                {onlineCount}<span style={{ color: 'var(--dim)' }}>/{DEMO_PLAYERS.length}</span>
+          {players.length > 0 && (
+            <div className="hstats">
+              <div className="hstat">
+                <div className="hsl">ONLINE</div>
+                <div className="hsv" style={{ color: onlineCount > 0 ? 'var(--g)' : 'var(--dim)' }}>
+                  {onlineCount}<span style={{ color: 'var(--dim)' }}>/{players.length}</span>
+                </div>
+              </div>
+              <div className="hsep" />
+              <div className="hstat">
+                <div className="hsl">COMBINED</div>
+                <div className="hsv">{fmt(totalBal)}</div>
+              </div>
+              <div className="hsep" />
+              <div className="hstat">
+                <div className="hsl">REAL $</div>
+                <div className="hsv">{fmtReal(totalBal)}</div>
               </div>
             </div>
-            <div className="hsep" />
-            <div className="hstat">
-              <div className="hsl">COMBINED</div>
-              <div className="hsv">{fmt(totalBal)}</div>
-            </div>
-            <div className="hsep" />
-            <div className="hstat">
-              <div className="hsl">REAL $</div>
-              <div className="hsv">{fmtReal(totalBal)}</div>
-            </div>
-          </div>
+          )}
 
           <div className="hright">
             <div className="ranges">
@@ -335,30 +389,42 @@ export default function Home() {
                 </button>
               ))}
             </div>
+            <button className="refresh-btn" onClick={load} title="Refresh now">↻</button>
+            {updated && <div className="upd">{fmtAge(updated)}</div>}
           </div>
         </header>
 
-        {/* ── Body ── */}
         <div className="body">
           <div className="left">
-            <div className="grid">
-              {DEMO_PLAYERS.map(p => (
-                <PlayerCard
-                  key={p.name}
-                  player={p}
-                  pts={getFilteredPts(p.name)}
-                  selected={selected === p.name}
-                  onClick={() => setSelected(selected === p.name ? null : p.name)}
-                />
-              ))}
-            </div>
+            {loading ? (
+              <div className="empty"><span className="spinner" /> loading...</div>
+            ) : players.length === 0 ? (
+              <div className="empty">
+                Waiting for data.<br />
+                <span style={{ color: 'var(--dimmer)', fontSize: 10, marginTop: 8, display: 'block' }}>
+                  Start the tracker app and point it at this URL.
+                </span>
+              </div>
+            ) : (
+              <div className="grid">
+                {players.map(p => (
+                  <PlayerCard
+                    key={p.name}
+                    player={p}
+                    pts={getFilteredPts(p.name)}
+                    selected={selected === p.name}
+                    onClick={() => setSelected(selected === p.name ? null : p.name)}
+                  />
+                ))}
+              </div>
+            )}
           </div>
 
           {selPlayer && (
             <div className="right">
               <DetailPanel
                 player={selPlayer}
-                allPts={DEMO_GRAPHS[selPlayer.name] || []}
+                allPts={graphs[selPlayer.name] || []}
                 rangeMs={rangeMs}
                 onClose={() => setSelected(null)}
               />
@@ -368,6 +434,10 @@ export default function Home() {
 
         <footer>
           <span>multi tracker</span>
+          <span className="fsep">·</span>
+          <span>updates every 15s</span>
+          <span className="fsep">·</span>
+          <span>graph data kept 7 days</span>
         </footer>
       </div>
     </>
@@ -403,7 +473,6 @@ const CSS = `
 
   #root { max-width: 1600px; margin: 0 auto; padding: 0 20px; }
 
-  /* ── Header ── */
   header {
     display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
     padding: 18px 0 14px;
@@ -445,12 +514,10 @@ const CSS = `
   .refresh-btn:hover { border-color: var(--bd2); color: var(--t); }
   .upd { font-size: 9px; color: var(--dimmer); letter-spacing: .06em; }
 
-  /* ── Body layout ── */
   .body { display: flex; gap: 14px; align-items: flex-start; }
   .left { flex: 1; min-width: 0; }
   .right { width: 380px; flex-shrink: 0; position: sticky; top: 16px; }
 
-  /* ── Grid ── */
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -464,7 +531,6 @@ const CSS = `
     line-height: 1.6;
   }
 
-  /* ── Card ── */
   .card {
     background: var(--bg2); border: 1px solid var(--bd);
     border-radius: 6px; overflow: hidden;
@@ -473,13 +539,13 @@ const CSS = `
   .card:hover    { border-color: var(--bd2); }
   .card.selected { border-color: rgba(0,255,136,.3); background: rgba(0,255,136,.02); }
 
-  .card-head     { padding: 13px 13px 9px; }
-  .card-top-row  { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; }
-  .avatar        { width: 32px; height: 32px; border-radius: 3px; image-rendering: pixelated; flex-shrink: 0; background: var(--bg3); }
-  .avatar.lg     { width: 44px; height: 44px; }
-  .card-info     { flex: 1; min-width: 0; }
-  .card-name     { font-size: 12px; font-weight: 700; letter-spacing: .06em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px; }
-  .card-status   { font-size: 8px; letter-spacing: .12em; display: flex; align-items: center; gap: 5px; }
+  .card-head    { padding: 13px 13px 9px; }
+  .card-top-row { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; }
+  .avatar       { width: 32px; height: 32px; border-radius: 3px; image-rendering: pixelated; flex-shrink: 0; background: var(--bg3); }
+  .avatar.lg    { width: 44px; height: 44px; }
+  .card-info    { flex: 1; min-width: 0; }
+  .card-name    { font-size: 12px; font-weight: 700; letter-spacing: .06em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px; }
+  .card-status  { font-size: 8px; letter-spacing: .12em; display: flex; align-items: center; gap: 5px; }
   .card-status.on  { color: var(--g); }
   .card-status.off { color: var(--dim); }
   .dot       { width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
@@ -498,7 +564,6 @@ const CSS = `
   .g  { color: var(--g); }
   .r  { color: var(--r); }
 
-  /* ── Detail panel ── */
   .detail {
     background: var(--bg2); border: 1px solid var(--bd);
     border-radius: 6px; overflow: hidden;
@@ -521,16 +586,6 @@ const CSS = `
   .detail-chart  { background: var(--bg); border-top: 1px solid var(--bd); border-bottom: 1px solid var(--bd); }
   .detail-footer { padding: 8px 14px; display: flex; gap: 8px; font-size: 9px; color: var(--dimmer); letter-spacing: .06em; flex-wrap: wrap; }
 
-  /* ── Setup box ── */
-  .setup-box { border: 1px solid rgba(255,153,0,.2); background: rgba(255,153,0,.04); border-radius: 6px; padding: 24px; max-width: 600px; }
-  .setup-title { font-size: 12px; font-weight: 700; letter-spacing: .1em; color: var(--o, #ff9500); margin-bottom: 16px; }
-  .setup-body { font-size: 11px; color: var(--dim); line-height: 1.8; }
-  .setup-body ol { padding-left: 20px; margin: 10px 0; }
-  .setup-body li { margin-bottom: 6px; }
-  .setup-body strong { color: var(--t); }
-  .setup-body code { background: var(--bg3); padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 10px; }
-
-  /* ── Footer ── */
   footer {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
     padding: 16px 0; border-top: 1px solid var(--bd);
@@ -538,14 +593,12 @@ const CSS = `
   }
   .fsep { color: var(--bd2); }
 
-  /* ── Spinner ── */
   .spinner {
     display: inline-block; width: 12px; height: 12px;
     border: 1.5px solid var(--bd2); border-top-color: var(--g);
     border-radius: 50%; animation: spin .65s linear infinite;
   }
 
-  /* ── Animations ── */
   @keyframes glow {
     0%,100% { box-shadow: 0 0 0 2px rgba(0,255,136,.1), 0 0 14px rgba(0,255,136,.5); }
     50%      { box-shadow: 0 0 0 3px rgba(0,255,136,.04), 0 0 6px rgba(0,255,136,.15); }
@@ -553,15 +606,14 @@ const CSS = `
   @keyframes sdpulse { 0%,100% { opacity:1; } 50% { opacity:.2; } }
   @keyframes spin { to { transform: rotate(360deg); } }
 
-  /* ── Responsive ── */
   @media (max-width: 900px) {
     .body  { flex-direction: column; }
     .right { width: 100%; position: static; }
   }
   @media (max-width: 600px) {
-    .grid  { grid-template-columns: 1fr; }
+    .grid   { grid-template-columns: 1fr; }
     .hstats { display: none; }
     .ranges button { padding: 4px 8px; font-size: 8px; }
-    .upd   { display: none; }
+    .upd    { display: none; }
   }
 `
