@@ -1071,6 +1071,9 @@ export default function Home() {
         const arr = JSON.parse(savedPlayers)
         if (Array.isArray(arr)) { setTrackedNames(arr); setSettingsDraft(arr) }
       } catch (_) {}
+    } else {
+      setShowSettings(true)
+      setLoading(false)
     }
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission()
